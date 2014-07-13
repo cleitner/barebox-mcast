@@ -351,8 +351,8 @@ static struct net_connection *net_new(IPaddr_t dest, rx_handler_f *handler,
 		dev_set_param(&edev->dev, "ethaddr", str);
 	}
 
-	/* If we don't have an ip only broadcast is allowed */
-	if (!edev->ipaddr && dest != 0xffffffff)
+	/* If we don't have an ip only broadcast and multicast are allowed */
+	if (!edev->ipaddr && !is_broadcast_ip_addr(dest) && !is_multicast_ip_addr(dest))
 		return ERR_PTR(-ENETDOWN);
 
 	con = xzalloc(sizeof(*con));
@@ -367,8 +367,10 @@ static struct net_connection *net_new(IPaddr_t dest, rx_handler_f *handler,
 	con->icmp = net_eth_to_icmphdr(con->packet);
 	con->handler = handler;
 
-	if (dest == 0xffffffff) {
+	if (is_broadcast_ip_addr(dest)) {
 		memset(con->et->et_dest, 0xff, 6);
+	} else if (is_multicast_ip_addr(dest)) {
+		multicast_ether_addr(con->et->et_dest, dest);
 	} else {
 		ret = arp_request(dest, con->et->et_dest);
 		if (ret)
@@ -433,6 +435,13 @@ void net_unregister(struct net_connection *con)
 
 static int net_ip_send(struct net_connection *con, int len)
 {
+	/*
+	 * Always update the source address, as it may change while a
+	 * connection is active. This will probably only happen on broadcast and
+	 * multicast destinations.
+	 */
+	net_copy_ip(&con->ip->saddr, &con->edev->ipaddr);
+
 	con->ip->tot_len = htons(sizeof(struct iphdr) + len);
 	con->ip->id = htons(net_ip_id++);
 	con->ip->check = 0;
@@ -549,14 +558,33 @@ bad:
 
 static int net_handle_udp(unsigned char *pkt, int len)
 {
+	struct iphdr *ip = net_eth_to_iphdr(pkt);
 	struct udphdr *udp = net_eth_to_udphdr(pkt);
 	struct net_connection *con;
+	IPaddr_t daddr;
+	int multicast;
+
+	daddr = net_read_ip(&ip->daddr);
+	multicast = is_multicast_ip_addr(daddr);
 
 	list_for_each_entry(con, &connection_list, list) {
-		if (con->proto == IPPROTO_UDP && udp->uh_dport == con->udp->uh_sport) {
-			con->handler(con->priv, pkt, len);
-			return 0;
-		}
+		if (con->proto != IPPROTO_UDP)
+			continue;
+
+		if (udp->uh_dport != con->udp->uh_sport)
+			continue;
+
+		/*
+		 * In case of multicast traffic we have to match the complete
+		 * endpoint (IP/port), because if we only matched on the port,
+		 * we might receive traffic from other multicast groups that
+		 * we aren't members of.
+		 */
+		if (multicast && daddr != net_read_ip(&con->ip->daddr))
+			continue;
+
+		con->handler(con->priv, pkt, len);
+		return 0;
 	}
 	return -EINVAL;
 }
@@ -598,8 +626,31 @@ static int net_handle_ip(struct eth_device *edev, unsigned char *pkt, int len)
 		goto bad;
 
 	tmp = net_read_ip(&ip->daddr);
-	if (edev->ipaddr && tmp != edev->ipaddr && tmp != 0xffffffff)
+	/*
+	 * We'll accept matching unicast traffic, broadcasts, any unicast
+	 * destination iff our source address is 0.0.0.0 and matching multicast
+	 * traffic.
+	 */
+	if (edev->ipaddr && tmp != edev->ipaddr && !is_broadcast_ip_addr(tmp) && !is_multicast_ip_addr(tmp))
 		return 0;
+
+	/*
+	 * We have to filter out multicast traffic that we aren't interested in.
+	 */
+	if (is_multicast_ip_addr(tmp)) {
+		struct net_connection *con;
+		int match = 0;
+
+		list_for_each_entry(con, &connection_list, list) {
+			if (tmp == net_read_ip(&con->ip->daddr)) {
+				match = 1;
+				break;
+			}
+		}
+
+		if (!match)
+			return 0;
+	}
 
 	switch (ip->protocol) {
 	case IPPROTO_ICMP:

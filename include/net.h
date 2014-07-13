@@ -374,7 +374,27 @@ static inline int is_broadcast_ether_addr(const u8 *addr)
 	return (addr[0] & addr[1] & addr[2] & addr[3] & addr[4] & addr[5]) == 0xff;
 }
 
+static inline int is_multicast_ip_addr(IPaddr_t addr)
+{
+	return (ntohl(addr) & 0xf0000000) == 0xe0000000;
+}
+
+static inline int is_broadcast_ip_addr(IPaddr_t addr)
+{
+	return ntohl(addr) == 0xffffffff;
+}
+
 #define ETH_ALEN 6
+
+static inline void multicast_ether_addr(u8 *addr, IPaddr_t mc_addr)
+{
+	uint32_t tmp = ntohl(mc_addr);
+
+	memcpy(addr, "\x01\x00\x5e\x00\x00\x00", ETH_ALEN);
+	addr[3] = (tmp >> 16) & 0x7f;
+	addr[4] = tmp >> 8;
+	addr[5] = tmp;
+}
 
 /**
  * random_ether_addr - Generate software assigned random Ethernet address
