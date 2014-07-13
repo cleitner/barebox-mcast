@@ -552,12 +552,10 @@ static int net_handle_udp(unsigned char *pkt, int len)
 	struct iphdr *ip = (struct iphdr *)(pkt + ETHER_HDR_SIZE);
 	struct net_connection *con;
 	struct udphdr *udp;
-	int port;
 
 	udp = (struct udphdr *)(ip + 1);
-	port = ntohs(udp->uh_dport);
 	list_for_each_entry(con, &connection_list, list) {
-		if (con->proto == IPPROTO_UDP && port == ntohs(con->udp->uh_sport)) {
+		if (con->proto == IPPROTO_UDP && udp->uh_dport == con->udp->uh_sport) {
 			con->handler(con->priv, pkt, len);
 			return 0;
 		}
