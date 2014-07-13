@@ -272,8 +272,69 @@ static int arp_request(IPaddr_t dest, unsigned char *ether)
 	return 0;
 }
 
+static int igmp_report(struct net_connection *con)
+{
+	static char *igmp_packet;
+
+	struct iphdr *ip;
+	struct igmpmsg *igmp;
+
+	if (!igmp_packet) {
+		igmp_packet = net_alloc_packet();
+		if (!igmp_packet)
+			return -ENOMEM;
+	}
+
+	memcpy(igmp_packet, con->packet, ETHER_HDR_SIZE + sizeof(struct iphdr));
+
+	ip = net_eth_to_iphdr(igmp_packet);
+	igmp = net_eth_to_igmpmsg(igmp_packet);
+
+	igmp->type = IGMP_HOST_MEMBERSHIP_REPORT;
+	igmp->unused = 0;
+	net_copy_ip(&igmp->group_addr, &con->ip->daddr);
+	igmp->checksum = 0;
+	igmp->checksum = ~net_checksum((unsigned char *)igmp, sizeof(struct igmpmsg));
+
+	ip->protocol = IPPROTO_IGMP;
+	/*
+	 * Limit the TTL to 1, as IGMPv2 mandates "All IGMP messages described
+	 * in this document are sent with IP TTL 1", although we're only
+	 * IGMPv1 capable (no router alert IP option and we ignore the max
+	 * response time)
+	 *
+	 * IGMPv1 only tells us to listen for other IGMP reports with TTL = 1,
+	 * but doesn't specify what we should send. TTL = 1 seems to be a fair
+	 * bet.
+	 */
+	ip->ttl = 1;
+	net_copy_ip(&con->ip->saddr, &con->edev->ipaddr);
+	ip->tot_len = htons(sizeof(struct iphdr) + sizeof(struct igmpmsg));
+	ip->id = htons(net_ip_id++);
+	ip->check = 0;
+	ip->check = ~net_checksum((unsigned char *)ip, sizeof(struct iphdr));
+
+	return eth_send(con->edev, igmp_packet, ETHER_HDR_SIZE + sizeof(struct iphdr) + sizeof(struct igmpmsg));
+}
+
+static LIST_HEAD(connection_list);
+
+static void igmp_poll(void)
+{
+	struct net_connection *con;
+
+	list_for_each_entry(con, &connection_list, list) {
+		if (con->igmp_report_timeout > 0 && is_timeout(con->igmp_report_timeout, 0)) {
+			con->igmp_report_timeout = 0;
+			/* Refresh IGMP membership */
+			igmp_report(con);
+		}
+	}
+}
+
 void net_poll(void)
 {
+	igmp_poll();
 	eth_rx();
 }
 
@@ -331,8 +392,6 @@ void net_set_gateway(IPaddr_t gw)
 	edev->gateway = gw;
 }
 
-static LIST_HEAD(connection_list);
-
 static struct net_connection *net_new(IPaddr_t dest, rx_handler_f *handler,
 		void *ctx)
 {
@@ -365,12 +424,16 @@ static struct net_connection *net_new(IPaddr_t dest, rx_handler_f *handler,
 	con->ip = net_eth_to_iphdr(con->packet);
 	con->udp = net_eth_to_udphdr(con->packet);
 	con->icmp = net_eth_to_icmphdr(con->packet);
+	con->igmp = net_eth_to_igmpmsg(con->packet);
 	con->handler = handler;
 
 	if (is_broadcast_ip_addr(dest)) {
 		memset(con->et->et_dest, 0xff, 6);
 	} else if (is_multicast_ip_addr(dest)) {
 		multicast_ether_addr(con->et->et_dest, dest);
+
+		/* Send the first report immediately */
+		con->igmp_report_timeout = get_time_ns();
 	} else {
 		ret = arp_request(dest, con->et->et_dest);
 		if (ret)
@@ -604,6 +667,73 @@ static int net_handle_icmp(unsigned char *pkt, int len)
 	return 0;
 }
 
+static int net_handle_igmp(unsigned char *pkt, int len)
+{
+	struct iphdr *ip = net_eth_to_iphdr(pkt);
+	struct igmpmsg *igmp = net_eth_to_igmpmsg(pkt);
+	IPaddr_t daddr, group_addr;
+	struct net_connection *con;
+
+	if (len < ETHER_HDR_SIZE + sizeof(struct iphdr) + sizeof(struct igmpmsg))
+		goto bad;
+
+	if (!net_checksum_ok((unsigned char *)igmp, sizeof(struct igmpmsg)))
+		goto bad;
+
+	if ((igmp->type & 0xf0) != 0x10)
+		goto skip;
+
+	daddr = net_read_ip(&ip->daddr);
+	group_addr = net_read_ip(&igmp->group_addr);
+
+	printf("handling igmp type %x\n", igmp->type);
+
+	switch (igmp->type) {
+	case IGMP_HOST_MEMBERSHIP_QUERY:
+		if (daddr != htonl(IGMP_ALL_HOST_ADDR))
+			goto bad;
+		/*
+		 * we have to send a report for every multicast IP we want to
+		 * keep alive
+		 */
+		list_for_each_entry(con, &connection_list, list) {
+			IPaddr_t daddr = net_read_ip(&con->ip->daddr);
+
+			if (is_multicast_ip_addr(daddr)) {
+				/* Start the report timer - we have to defend the membership */
+				if (con->igmp_report_timeout == 0)
+					con->igmp_report_timeout = get_time_ns() + (rand() % 10000) * MSECOND;
+			}
+		}
+		break;
+	case IGMP_HOST_MEMBERSHIP_REPORT:
+		if (daddr != group_addr)
+			goto bad;
+		if (ip->ttl != 1)
+			goto skip;
+
+		list_for_each_entry(con, &connection_list, list) {
+			/*
+			 * Somebody else is in the same group - no need to send
+			 * a report ourselves
+			 */
+			if (net_read_ip(&con->ip->daddr) == group_addr)
+				con->igmp_report_timeout = 0;
+		}
+		break;
+	default:
+		pr_debug("Unexpected IGMP request %d\n", igmp->type);
+		goto bad;
+	}
+
+skip:
+	return 0;
+
+bad:
+	net_bad_packet(pkt, len);
+	return -EINVAL;
+}
+
 static int net_handle_ip(struct eth_device *edev, unsigned char *pkt, int len)
 {
 	struct iphdr *ip = net_eth_to_iphdr(pkt);
@@ -639,7 +769,7 @@ static int net_handle_ip(struct eth_device *edev, unsigned char *pkt, int len)
 	 */
 	if (is_multicast_ip_addr(tmp)) {
 		struct net_connection *con;
-		int match = 0;
+		int match = tmp == htonl(IGMP_ALL_HOST_ADDR);
 
 		list_for_each_entry(con, &connection_list, list) {
 			if (tmp == net_read_ip(&con->ip->daddr)) {
@@ -655,6 +785,8 @@ static int net_handle_ip(struct eth_device *edev, unsigned char *pkt, int len)
 	switch (ip->protocol) {
 	case IPPROTO_ICMP:
 		return net_handle_icmp(pkt, len);
+	case IPPROTO_IGMP:
+		return net_handle_igmp(pkt, len);
 	case IPPROTO_UDP:
 		return net_handle_udp(pkt, len);
 	}

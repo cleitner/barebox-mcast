@@ -104,6 +104,7 @@ struct ethernet {
 #define PROT_VLAN	0x8100		/* IEEE 802.1q protocol		*/
 
 #define IPPROTO_ICMP	 1	/* Internet Control Message Protocol	*/
+#define IPPROTO_IGMP	 2	/* Internet Group Management Protocol   */
 #define IPPROTO_UDP	17	/* User Datagram Protocol		*/
 
 /*
@@ -185,6 +186,17 @@ struct icmphdr {
 	} un;
 } __attribute__ ((packed));
 
+#define IGMP_ALL_HOST_ADDR		0xe0000001
+#define IGMP_HOST_MEMBERSHIP_QUERY	0x11		/* IGMPv1 */
+#define IGMP_HOST_MEMBERSHIP_REPORT	0x12		/* IGMPv1 */
+
+struct igmpmsg {
+	uint8_t		type;
+	uint8_t		unused;
+	uint16_t	checksum;
+	uint32_t	group_addr;
+} __attribute__ ((packed));
+
 
 /*
  * Maximum packet size; used to allocate packet storage.
@@ -239,6 +251,11 @@ static inline struct icmphdr *net_eth_to_icmphdr(char *pkt)
 static inline char *net_eth_to_icmp_payload(char *pkt)
 {
 	return (char *)(net_eth_to_icmphdr(pkt) + 1);
+}
+
+static inline struct igmpmsg *net_eth_to_igmpmsg(char *pkt)
+{
+	return (struct igmpmsg *)(net_eth_to_iphdr(pkt) + 1);
 }
 
 static inline char *net_eth_to_udp_payload(char *pkt)
@@ -448,10 +465,16 @@ struct net_connection {
 	struct udphdr *udp;
 	struct eth_device *edev;
 	struct icmphdr *icmp;
+	struct igmpmsg *igmp;
 	unsigned char *packet;
 	struct list_head list;
 	rx_handler_f *handler;
 	int proto;
+	/*
+	 * Set to the timestamp when to send the membership report. If 0, we're
+	 * in idle state
+	 */
+	uint64_t igmp_report_timeout;
 	void *priv;
 };
 
