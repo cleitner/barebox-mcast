@@ -445,7 +445,7 @@ void net_unregister(struct net_connection *con);
 
 static inline int net_udp_bind(struct net_connection *con, int sport)
 {
-	con->udp->uh_sport = ntohs(sport);
+	con->udp->uh_sport = htons(sport);
 	return 0;
 }
 
