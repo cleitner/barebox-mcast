@@ -302,10 +302,6 @@ static int igmp_report(struct net_connection *con)
 	 * in this document are sent with IP TTL 1", although we're only
 	 * IGMPv1 capable (no router alert IP option and we ignore the max
 	 * response time)
-	 *
-	 * IGMPv1 only tells us to listen for other IGMP reports with TTL = 1,
-	 * but doesn't specify what we should send. TTL = 1 seems to be a fair
-	 * bet.
 	 */
 	ip->ttl = 1;
 	net_copy_ip(&con->ip->saddr, &con->edev->ipaddr);
