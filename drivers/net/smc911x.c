@@ -487,7 +487,7 @@ static int smc911x_eth_rx(struct eth_device *edev)
 static int smc911x_init_dev(struct eth_device *edev)
 {
 	smc911x_set_mac_csr(edev, MAC_CR, MAC_CR_TXEN | MAC_CR_RXEN |
-			MAC_CR_HBDIS);
+			MAC_CR_HBDIS | MAC_CR_MCPAS);
 
 	return 0;
 }

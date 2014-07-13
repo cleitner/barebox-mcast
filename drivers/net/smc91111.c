@@ -141,7 +141,7 @@
 #define RCR_SOFTRST	0x8000 	/* resets the chip */
 
 /* the normal settings for the RCR register : */
-#define RCR_DEFAULT	(RCR_STRIP_CRC | RCR_RXEN)
+#define RCR_DEFAULT	(RCR_STRIP_CRC | RCR_RXEN | RCR_ALMUL)
 #define RCR_CLEAR	0x0	/* set it to a base state */
 
 /* Counter Register */
