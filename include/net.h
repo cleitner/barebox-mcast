@@ -216,6 +216,11 @@ IPaddr_t net_get_serverip(void);
 /* Do the work */
 void net_poll(void);
 
+static inline struct arprequest *net_eth_to_arprequest(char *pkt)
+{
+	return (struct arprequest *)(pkt + ETHER_HDR_SIZE);
+}
+
 static inline struct iphdr *net_eth_to_iphdr(char *pkt)
 {
 	return (struct iphdr *)(pkt + ETHER_HDR_SIZE);

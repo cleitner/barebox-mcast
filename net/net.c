@@ -216,7 +216,7 @@ static int arp_request(IPaddr_t dest, unsigned char *ether)
 	memcpy(et->et_src, edev->ethaddr, 6);
 	et->et_protlen = htons(PROT_ARP);
 
-	arp = (struct arprequest *)(pkt + ETHER_HDR_SIZE);
+	arp = net_eth_to_arprequest(pkt);
 
 	arp->ar_hrd = htons(ARP_ETHER);
 	arp->ar_pro = htons(PROT_IP);
@@ -362,9 +362,9 @@ static struct net_connection *net_new(IPaddr_t dest, rx_handler_f *handler,
 	memset(con->packet, 0, PKTSIZE);
 
 	con->et = (struct ethernet *)con->packet;
-	con->ip = (struct iphdr *)(con->packet + ETHER_HDR_SIZE);
-	con->udp = (struct udphdr *)(con->packet + ETHER_HDR_SIZE + sizeof(struct iphdr));
-	con->icmp = (struct icmphdr *)(con->packet + ETHER_HDR_SIZE + sizeof(struct iphdr));
+	con->ip = net_eth_to_iphdr(con->packet);
+	con->udp = net_eth_to_udphdr(con->packet);
+	con->icmp = net_eth_to_icmphdr(con->packet);
 	con->handler = handler;
 
 	if (dest == 0xffffffff) {
@@ -459,7 +459,7 @@ int net_icmp_send(struct net_connection *con, int len)
 
 static int net_answer_arp(unsigned char *pkt, int len)
 {
-	struct arprequest *arp = (struct arprequest *)(pkt + ETHER_HDR_SIZE);
+	struct arprequest *arp = net_eth_to_arprequest(pkt);
 	struct ethernet *et = (struct ethernet *)pkt;
 	struct eth_device *edev = eth_get_current();
 	unsigned char *packet;
@@ -513,7 +513,7 @@ static int net_handle_arp(struct eth_device *edev, unsigned char *pkt, int len)
 	 *   address; so if we receive such a packet, we set
 	 *   the server ethernet address
 	 */
-	arp = (struct arprequest *)(pkt + ETHER_HDR_SIZE);
+	arp = net_eth_to_arprequest(pkt);
 	if (len < ARP_HDR_SIZE)
 		goto bad;
 	if (ntohs(arp->ar_hrd) != ARP_ETHER)
@@ -549,11 +549,9 @@ bad:
 
 static int net_handle_udp(unsigned char *pkt, int len)
 {
-	struct iphdr *ip = (struct iphdr *)(pkt + ETHER_HDR_SIZE);
+	struct udphdr *udp = net_eth_to_udphdr(pkt);
 	struct net_connection *con;
-	struct udphdr *udp;
 
-	udp = (struct udphdr *)(ip + 1);
 	list_for_each_entry(con, &connection_list, list) {
 		if (con->proto == IPPROTO_UDP && udp->uh_dport == con->udp->uh_sport) {
 			con->handler(con->priv, pkt, len);
@@ -580,7 +578,7 @@ static int net_handle_icmp(unsigned char *pkt, int len)
 
 static int net_handle_ip(struct eth_device *edev, unsigned char *pkt, int len)
 {
-	struct iphdr *ip = (struct iphdr *)(pkt + ETHER_HDR_SIZE);
+	struct iphdr *ip = net_eth_to_iphdr(pkt);
 	IPaddr_t tmp;
 
 	debug("%s\n", __func__);
